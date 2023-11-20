@@ -1,0 +1,12 @@
+# PyCharm
+.idea
+
+# virtualenv
+venv
+
+# pytest
+.pytest_cache
+
+# packaging
+dist
+*.egg-info

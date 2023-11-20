@@ -1,0 +1,5 @@
+# packaging
+twine==4.0.2
+
+# testing
+pytest==7.4.3
