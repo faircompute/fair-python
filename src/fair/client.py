@@ -1,10 +1,10 @@
 import os
 import sys
 from time import sleep
+from typing import Sequence, Union, Optional
+from urllib.parse import quote_plus
 
 import requests
-from urllib.parse import quote_plus
-from typing import Sequence, Union
 
 POLL_TIMEOUT = 0.1
 
@@ -40,7 +40,19 @@ class FairClient:
             command: Sequence[str] = tuple(),
             ports: Sequence[tuple[int, int]] = tuple(),
             runtime: str = 'docker',
+            node: Optional[str] = None,
             detach: bool = False):
+        if node is None:
+            return self._run_job(image, command, ports, runtime, detach)
+        else:
+            return self._run_program(node, image, command, ports, runtime, detach)
+
+    def _run_job(self,
+                 image: str,
+                 command: Sequence[str] = tuple(),
+                 ports: Sequence[tuple[int, int]] = tuple(),
+                 runtime: str = 'docker',
+                 detach: bool = False):
         resp = self.put_job(image, command, ports, runtime)
         job_id = resp['job_id']
         bucket_id = resp['bucket_id']
@@ -63,30 +75,7 @@ class FairClient:
         if detach:
             return job
         else:
-            # print stdout and stderr
-            stdout_data = self.get_file_data(bucket_id, '#stdout')
-            stderr_data = self.get_file_data(bucket_id, '#stderr')
-            while stdout_data or stderr_data:
-                data_received = False
-                if stdout_data:
-                    try:
-                        data = next(stdout_data)
-                        if data:
-                            sys.stdout.write(data.decode('utf-8'))
-                            data_received = True
-                    except StopIteration:
-                        stdout_data = None
-                if stderr_data:
-                    try:
-                        data = next(stdout_data)
-                        if data:
-                            sys.stderr.write(data.decode('utf-8'))
-                            data_received = True
-                    except StopIteration:
-                        stderr_data = None
-
-                if not data_received:
-                    sleep(POLL_TIMEOUT)
+            self._poll_output(bucket_id)
 
             # wait for job to complete
             while True:
@@ -98,6 +87,96 @@ class FairClient:
 
             # get result
             return self.get_program_result(job['assignment']['node_id'], job['assignment']['program_id'])
+
+    def _run_program(self,
+                     node_id: str,
+                     image: str,
+                     command: Sequence[str] = tuple(),
+                     ports: Sequence[tuple[int, int]] = tuple(),
+                     runtime: str = 'docker',
+                     detach: bool = False):
+        commands = [
+            {
+                'type': 'Create',
+                'container_desc': {
+                    'image': image,
+                    'runtime': runtime,
+                    'ports': [[{"port": host_port, "ip": 'null'}, {"port": container_port, "protocol": "Tcp"}] for (host_port, container_port) in ports],
+                    'command': command,
+                },
+            },
+            {
+                'type': 'Start',
+                'container_id': '$0',
+            },
+        ]
+        if not detach:
+            commands.append({
+                'type': 'Wait',
+                'container_id': '$0',
+            })
+
+        resp = self.put_program(node_id, commands)
+        program_id = resp['program_id']
+        bucket_id = resp['bucket_id']
+
+        # upload stdin (empty for now)
+        self.put_file_eof(bucket_id, '#stdin')
+
+        # wait for program to get scheduled
+        while True:
+            program_info = self.get_program_info(node_id, program_id)
+            if program_info['status'] in ('Queued', 'NotResponding'):
+                sleep(POLL_TIMEOUT)
+            elif program_info['status'] == 'Processing':
+                break
+            elif program_info['status'] == 'Completed':
+                raise Exception("Job completed before it was scheduled")
+
+        if detach:
+            return program_info
+        else:
+            self._poll_output(bucket_id)
+
+            # wait for job to complete
+            while True:
+                job = self.get_program_info(node_id, program_id)
+                if job['status'] == 'Completed':
+                    break
+                else:
+                    sleep(POLL_TIMEOUT)
+
+            # get result
+            return self.get_program_result(node_id, program_id)
+
+    def _poll_output(self, bucket_id: int):
+        # print stdout and stderr
+        stdout_data = self.get_file_data(bucket_id, '#stdout')
+        stderr_data = self.get_file_data(bucket_id, '#stderr')
+        while stdout_data or stderr_data:
+            data_received = False
+            if stdout_data:
+                try:
+                    data = next(stdout_data)
+                    if data:
+                        sys.stdout.write(data.decode('utf-8'))
+                        data_received = True
+                except StopIteration:
+                    stdout_data = None
+            if stderr_data:
+                try:
+                    data = next(stdout_data)
+                    if data:
+                        sys.stderr.write(data.decode('utf-8'))
+                        data_received = True
+                except StopIteration:
+                    stderr_data = None
+
+            if not data_received:
+                sleep(POLL_TIMEOUT)
+
+    def get_nodes(self):
+        return self._make_request('get', url=f"{self.server_address}/nodes").json()['nodes']
 
     def put_job(self,
                 image: str,
@@ -119,6 +198,18 @@ class FairClient:
 
     def get_job_info(self, job_id):
         return self._make_request('get', url=f"{self.server_address}/jobs/{job_id}/info").json()
+
+    def put_program(self,
+                    node_id: str,
+                    commands: Sequence[dict]):
+        json = {
+            'version': 'V018',
+            'commands': commands,
+        }
+        return self._make_request('put', url=f"{self.server_address}/nodes/{node_id}/programs", json=json).json()
+
+    def get_program_info(self, node_id, program_id):
+        return self._make_request('get', url=f"{self.server_address}/nodes/{node_id}/programs/{program_id}/info").json()
 
     def get_file_data(self, bucket_id: int, file_name: str):
         session = requests.Session()
