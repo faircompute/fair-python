@@ -1,9 +1,27 @@
-# FairCompute Python Client
+# Fair Compute Python Client
 
-FairCompute Python is a Python client for FairCompute API.
+Fair is a Python client for [Fair Compute](https://faircompute.com) API.
 It allows to schedule jobs, monitor their status and retrieve results.
 
-## Developing FairCompute Python Client
+### Creating Fair Account
+
+To use FairCompute Python Client you need to have a Fair account.
+Please sign up at https://faircompute.com.
+
+### Launching a job
+
+To launch a job, create a `FairClient` instance and call `run` method.
+
+```python
+from fair import FairClient
+
+client = FairClient('http://faircompute:8000', '<email>', '<password>')
+client.run(image='alpine', command=['echo', 'hello fair compute'])
+```
+
+## Developing Fair
+
+This section is for developers of FairCompute Python client library.
 
 ### Prerequisites
 
@@ -30,3 +48,7 @@ and `FAIRCOMPUTE_USER_PASSWORD` environment variables:
 ```shell
 FAIRCOMPUTE_SERVER_URL=http://faircompute:8000 FAIRCOMPUTE_USER_EMAIL=<email> FAIRCOMPUTE_USER_PASSWORD=<password> pytest
 ```
+
+### Uploading to PyPI
+
+Please follow the instructions at https://packaging.python.org/tutorials/packaging-projects/
