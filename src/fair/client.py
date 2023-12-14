@@ -1,3 +1,4 @@
+import random
 import os
 import sys
 from time import sleep
@@ -39,13 +40,16 @@ class FairClient:
             image: str,
             command: Sequence[str] = tuple(),
             ports: Sequence[tuple[int, int]] = tuple(),
+            volumes: Sequence[tuple[str, str]] = tuple(),
             runtime: str = 'docker',
             node: Optional[str] = None,
             detach: bool = False):
-        if node is None:
-            return self._run_job(image, command, ports, runtime, detach)
-        else:
-            return self._run_program(node, image, command, ports, runtime, detach)
+        if node is None or node == 'any':
+            nodes = self.get_nodes()
+            if len(nodes) == 0:
+                raise Exception(f"No nodes found")
+            node = random.choice(nodes)['node_id']
+        return self._run_program(node, image, command, ports=ports, runtime=runtime, volumes=volumes, detach=detach)
 
     def _run_job(self,
                  image: str,
@@ -93,6 +97,7 @@ class FairClient:
                      image: str,
                      command: Sequence[str] = tuple(),
                      ports: Sequence[tuple[int, int]] = tuple(),
+                     volumes: Sequence[tuple[str, str]] = tuple(),
                      runtime: str = 'docker',
                      detach: bool = False):
         commands = [
@@ -103,8 +108,22 @@ class FairClient:
                     'runtime': runtime,
                     'ports': [[{"port": host_port, "ip": 'null'}, {"port": container_port, "protocol": "Tcp"}] for (host_port, container_port) in ports],
                     'command': command,
+                    'host_config': {
+                        'network_mode': 'bridge'
+                    }
                 },
             },
+            *[
+                {
+                    'type': 'CopyInto',
+                    'container_id': '$0',
+                    'bucket_id': (1 << 64) - 1,
+                    'remote_key': remote_path,  # we use remote_path as key to reference the file in the bucket
+                                                # key is an arbitrary string
+                    'local_path': remote_path
+                }
+                for _, remote_path in volumes
+            ],
             {
                 'type': 'Start',
                 'container_id': '$0',
@@ -119,6 +138,12 @@ class FairClient:
         resp = self.put_program(node_id, commands)
         program_id = resp['program_id']
         bucket_id = resp['bucket_id']
+
+        for local_path, remote_path in volumes:
+            with open(local_path) as f:
+                data = f.read()
+                self.put_file_data(bucket_id=bucket_id, file_name=remote_path, data=data)
+                self.put_file_eof(bucket_id=bucket_id, file_name=remote_path)
 
         # upload stdin (empty for now)
         self.put_file_eof(bucket_id, '#stdin')
@@ -153,7 +178,7 @@ class FairClient:
         # print stdout and stderr
         stdout_data = self.get_file_data(bucket_id, '#stdout')
         stderr_data = self.get_file_data(bucket_id, '#stderr')
-        while stdout_data or stderr_data:
+        while stdout_data is not None or stderr_data is not None:
             data_received = False
             if stdout_data:
                 try:
@@ -165,7 +190,7 @@ class FairClient:
                     stdout_data = None
             if stderr_data:
                 try:
-                    data = next(stdout_data)
+                    data = next(stderr_data)
                     if data:
                         sys.stderr.write(data.decode('utf-8'))
                         data_received = True
@@ -177,27 +202,6 @@ class FairClient:
 
     def get_nodes(self):
         return self._make_request('get', url=f"{self.server_address}/nodes").json()['nodes']
-
-    def put_job(self,
-                image: str,
-                command: Sequence[str] = tuple(),
-                ports: Sequence[tuple[int, int]] = tuple(),
-                runtime: str = 'docker'):
-        json = {
-            'version': 'V018',
-            'container_desc': {
-                'image': image,
-                'runtime': runtime,
-                'ports': [[{"port": host_port, "ip": 'null'}, {"port": container_port, "protocol": "Tcp"}] for (host_port, container_port) in ports],
-                'command': command,
-            },
-            'input_files': [],
-            'output_files': [],
-        }
-        return self._make_request('put', url=f"{self.server_address}/jobs", json=json).json()
-
-    def get_job_info(self, job_id):
-        return self._make_request('get', url=f"{self.server_address}/jobs/{job_id}/info").json()
 
     def put_program(self,
                     node_id: str,
