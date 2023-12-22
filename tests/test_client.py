@@ -23,3 +23,8 @@ def test_docker_run_with_volumes(fair_client, capsys):
                                command=['cat', '/app/file.txt']) == 0
     captured = capsys.readouterr()
     assert captured.out == "temp file created in test"
+
+
+def test_node_info(fair_client, capsys):
+    nodes = fair_client.get_nodes()
+    assert nodes[0]['host_address'] == '127.0.0.1'

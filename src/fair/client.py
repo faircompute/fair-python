@@ -42,6 +42,7 @@ class FairClient:
             ports: Sequence[tuple[int, int]] = tuple(),
             volumes: Sequence[tuple[str, str]] = tuple(),
             runtime: str = 'docker',
+            network: str = 'bridge',
             node: Optional[str] = None,
             detach: bool = False):
         if node is None or node == 'any':
@@ -49,48 +50,8 @@ class FairClient:
             if len(nodes) == 0:
                 raise Exception(f"No nodes found")
             node = random.choice(nodes)['node_id']
-        return self._run_program(node, image, command, ports=ports, runtime=runtime, volumes=volumes, detach=detach)
-
-    def _run_job(self,
-                 image: str,
-                 command: Sequence[str] = tuple(),
-                 ports: Sequence[tuple[int, int]] = tuple(),
-                 runtime: str = 'docker',
-                 detach: bool = False):
-        resp = self.put_job(image, command, ports, runtime)
-        job_id = resp['job_id']
-        bucket_id = resp['bucket_id']
-
-        # upload stdin (empty for now)
-        self.put_file_eof(bucket_id, '#stdin')
-
-        # wait for job to get scheduled
-        while True:
-            job = self.get_job_info(job_id)
-            if job['status'] in ('Queued', 'NotResponding'):
-                sleep(POLL_TIMEOUT)
-            elif job['status'] == 'Processing':
-                break
-            elif job['status'] == 'Expired':
-                raise Exception("Job expired")
-            elif job['status'] == 'Completed':
-                raise Exception("Job completed before it was scheduled")
-
-        if detach:
-            return job
-        else:
-            self._poll_output(bucket_id)
-
-            # wait for job to complete
-            while True:
-                job = self.get_job_info(job_id)
-                if job['status'] in ('Expired', 'Completed'):
-                    break
-                else:
-                    sleep(POLL_TIMEOUT)
-
-            # get result
-            return self.get_program_result(job['assignment']['node_id'], job['assignment']['program_id'])
+        return self._run_program(node, image, command, ports=ports, runtime=runtime,
+                                 network=network, volumes=volumes, detach=detach)
 
     def _run_program(self,
                      node_id: str,
@@ -99,6 +60,7 @@ class FairClient:
                      ports: Sequence[tuple[int, int]] = tuple(),
                      volumes: Sequence[tuple[str, str]] = tuple(),
                      runtime: str = 'docker',
+                     network: str = 'bridge',
                      detach: bool = False):
         commands = [
             {
@@ -109,7 +71,7 @@ class FairClient:
                     'ports': [[{"port": host_port, "ip": 'null'}, {"port": container_port, "protocol": "Tcp"}] for (host_port, container_port) in ports],
                     'command': command,
                     'host_config': {
-                        'network_mode': 'bridge'
+                        'network_mode': network
                     }
                 },
             },
@@ -153,10 +115,10 @@ class FairClient:
             program_info = self.get_program_info(node_id, program_id)
             if program_info['status'] in ('Queued', 'NotResponding'):
                 sleep(POLL_TIMEOUT)
-            elif program_info['status'] == 'Processing':
+            elif program_info['status'] in ('Processing', 'Completed'):
                 break
-            elif program_info['status'] == 'Completed':
-                raise Exception("Job completed before it was scheduled")
+            else:
+                raise RuntimeError("Unexpected program status: {}".format(program_info['status']))
 
         if detach:
             return program_info

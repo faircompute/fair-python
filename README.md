@@ -52,3 +52,10 @@ FAIRCOMPUTE_SERVER_URL=http://faircompute:8000 FAIRCOMPUTE_USER_EMAIL=<email> FA
 ### Uploading to PyPI
 
 Please follow the instructions at https://packaging.python.org/tutorials/packaging-projects/
+
+```shell
+rm -rf dist
+python3 -m build
+python3 -m twine upload --repository testpypi dist/*
+python3 -m twine upload dist/*
+```
